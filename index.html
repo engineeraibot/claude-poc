@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>Low Poly Forest Box</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #1a1a2e; overflow: hidden; font-family: sans-serif; }
+    canvas { display: block; }
+    #ui {
+      position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
+      color: rgba(255,255,255,0.7); font-size: 13px; text-align: center;
+      pointer-events: none; letter-spacing: 0.5px;
+    }
+    #gyro-btn {
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+      background: rgba(255,255,255,0.15); border: 1px solid rgba(255,255,255,0.3);
+      color: #fff; padding: 10px 22px; border-radius: 24px; font-size: 14px;
+      cursor: pointer; backdrop-filter: blur(6px); display: none;
+    }
+  </style>
+</head>
+<body>
+  <div id="ui">Tilt your device to look around</div>
+  <button id="gyro-btn">Enable Motion Controls</button>
+
+  <script type="importmap">
+    { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.module.js" } }
+  </script>
+
+  <script type="module">
+    import * as THREE from 'three';
+
+    // ── Renderer ──────────────────────────────────────────────────────────────
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.1;
+    document.body.appendChild(renderer.domElement);
+
+    // ── Scene & camera ────────────────────────────────────────────────────────
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x1a1a2e);
+    scene.fog = new THREE.Fog(0x1a1a2e, 30, 60);
+
+    const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 200);
+    // Camera sits outside the box, looking in from the front
+    camera.position.set(0, 6, 22);
+    camera.lookAt(0, 3, 0);
+
+    // Orientation quaternion driven by gyro
+    const gyroQuat = new THREE.Quaternion();
+    const baseQuat = new THREE.Quaternion();
+    baseQuat.setFromEuler(new THREE.Euler(-Math.PI / 12, 0, 0)); // slight downward tilt
+
+    // ── Lighting ──────────────────────────────────────────────────────────────
+    const ambient = new THREE.AmbientLight(0x88aacc, 0.6);
+    scene.add(ambient);
+
+    const sun = new THREE.DirectionalLight(0xffe8b0, 1.4);
+    sun.position.set(8, 18, 6);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(2048, 2048);
+    sun.shadow.camera.near = 0.5;
+    sun.shadow.camera.far = 60;
+    sun.shadow.camera.left = -14;
+    sun.shadow.camera.right = 14;
+    sun.shadow.camera.top = 14;
+    sun.shadow.camera.bottom = -14;
+    scene.add(sun);
+
+    const fill = new THREE.DirectionalLight(0x8899ff, 0.4);
+    fill.position.set(-8, 5, -6);
+    scene.add(fill);
+
+    // ── Palette ───────────────────────────────────────────────────────────────
+    const C = {
+      ground:   0x5a7c45,
+      groundD:  0x4a6838,
+      grass:    0x6d9c52,
+      treeTrunk:0x7a5230,
+      treeLeaf: [0x3d8c40, 0x2e7435, 0x4cac4a, 0x256b2e, 0x5bb852],
+      river:    0x3a8fbf,
+      riverF:   0x5ab8e8,
+      boxWall:  0x2c3e50,
+      boxEdge:  0x34495e,
+      snow:     0xe8e8e8,
+      deer:     0xc8835a,
+      rabbit:   0xd4b896,
+      fox:      0xd46b35,
+    };
+
+    function mat(color, rough = 0.9, metal = 0) {
+      return new THREE.MeshStandardMaterial({ color, roughness: rough, metalness: metal, flatShading: true });
+    }
+
+    // ── Helper: low-poly cone tree ─────────────────────────────────────────
+    function makeTree(x, z, scale = 1) {
+      const g = new THREE.Group();
+
+      const trunkH = (0.8 + Math.random() * 0.6) * scale;
+      const trunk = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.12 * scale, 0.18 * scale, trunkH, 6),
+        mat(C.treeTrunk)
+      );
+      trunk.position.y = trunkH / 2;
+      trunk.castShadow = true;
+      g.add(trunk);
+
+      const leafColor = C.treeLeaf[Math.floor(Math.random() * C.treeLeaf.length)];
+      const layers = 2 + Math.floor(Math.random() * 2);
+      for (let i = 0; i < layers; i++) {
+        const r = (1.2 - i * 0.25) * scale;
+        const h = (1.6 - i * 0.3) * scale;
+        const cone = new THREE.Mesh(
+          new THREE.ConeGeometry(r, h, 7),
+          mat(leafColor)
+        );
+        cone.position.y = trunkH + i * (h * 0.5);
+        cone.castShadow = true;
+        g.add(cone);
+      }
+
+      g.position.set(x, 0, z);
+      g.rotation.y = Math.random() * Math.PI * 2;
+      return g;
+    }
+
+    // ── Helper: low-poly boulder ───────────────────────────────────────────
+    function makeBoulder(x, z) {
+      const s = 0.3 + Math.random() * 0.4;
+      const m = new THREE.Mesh(
+        new THREE.DodecahedronGeometry(s, 0),
+        mat(0x7a7a7a)
+      );
+      m.scale.y = 0.6;
+      m.position.set(x, s * 0.3, z);
+      m.rotation.y = Math.random() * Math.PI;
+      m.castShadow = true;
+      m.receiveShadow = true;
+      return m;
+    }
+
+    // ── Helper: low-poly animal ────────────────────────────────────────────
+    function makeAnimal(type) {
+      const g = new THREE.Group();
+      let bodyColor, bodyW, bodyH, bodyD, legH, neckH, headR;
+
+      if (type === 'deer') {
+        bodyColor = C.deer; bodyW = 0.5; bodyH = 0.45; bodyD = 0.9; legH = 0.6; neckH = 0.4; headR = 0.2;
+      } else if (type === 'rabbit') {
+        bodyColor = C.rabbit; bodyW = 0.28; bodyH = 0.3; bodyD = 0.5; legH = 0.2; neckH = 0.1; headR = 0.16;
+      } else { // fox
+        bodyColor = C.fox; bodyW = 0.35; bodyH = 0.3; bodyD = 0.7; legH = 0.3; neckH = 0.15; headR = 0.16;
+      }
+
+      const bm = mat(bodyColor);
+      const body = new THREE.Mesh(new THREE.BoxGeometry(bodyW, bodyH, bodyD, 1, 1, 2), bm);
+      body.position.y = legH + bodyH / 2;
+      body.castShadow = true;
+      g.add(body);
+
+      // legs
+      const lm = mat(new THREE.Color(bodyColor).multiplyScalar(0.8).getHex());
+      for (let lx of [-bodyW * 0.3, bodyW * 0.3]) {
+        for (let lz of [-bodyD * 0.3, bodyD * 0.3]) {
+          const leg = new THREE.Mesh(new THREE.BoxGeometry(bodyW * 0.2, legH, bodyW * 0.2), lm);
+          leg.position.set(lx, legH / 2, lz);
+          leg.castShadow = true;
+          g.add(leg);
+        }
+      }
+
+      // neck + head
+      const neck = new THREE.Mesh(new THREE.CylinderGeometry(headR * 0.6, headR * 0.7, neckH, 5), bm);
+      neck.position.set(0, legH + bodyH + neckH / 2, bodyD * 0.3);
+      g.add(neck);
+
+      const head = new THREE.Mesh(new THREE.DodecahedronGeometry(headR, 0), bm);
+      head.position.set(0, legH + bodyH + neckH + headR * 0.8, bodyD * 0.3);
+      head.castShadow = true;
+      g.add(head);
+
+      // ears (rabbits)
+      if (type === 'rabbit') {
+        for (let ex of [-0.08, 0.08]) {
+          const ear = new THREE.Mesh(new THREE.ConeGeometry(0.04, 0.2, 4), bm);
+          ear.position.set(ex, legH + bodyH + neckH + headR * 1.6 + 0.1, bodyD * 0.3);
+          g.add(ear);
+        }
+      }
+
+      // antlers (deer)
+      if (type === 'deer') {
+        const antlerMat = mat(0x8b5e3c);
+        for (let ax of [-0.15, 0.15]) {
+          const base = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.03, 0.35, 4), antlerMat);
+          base.position.set(ax, legH + bodyH + neckH + headR * 1.7, bodyD * 0.3);
+          base.rotation.z = ax > 0 ? -0.3 : 0.3;
+          g.add(base);
+        }
+      }
+
+      return g;
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  BOX
+    // ══════════════════════════════════════════════════════════════════════════
+    const BOX_W = 22, BOX_H = 14, BOX_D = 22;
+    const wallMat = new THREE.MeshStandardMaterial({
+      color: C.boxWall, roughness: 0.8, metalness: 0.1, side: THREE.BackSide
+    });
+    const boxGeom = new THREE.BoxGeometry(BOX_W, BOX_H, BOX_D);
+    const boxMesh = new THREE.Mesh(boxGeom, wallMat);
+    boxMesh.position.y = BOX_H / 2;
+    boxMesh.receiveShadow = true;
+    scene.add(boxMesh);
+
+    // Thin edges
+    const edges = new THREE.LineSegments(
+      new THREE.EdgesGeometry(boxGeom),
+      new THREE.LineBasicMaterial({ color: C.boxEdge, linewidth: 1 })
+    );
+    edges.position.copy(boxMesh.position);
+    scene.add(edges);
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  TERRAIN (flat low-poly ground with vertex noise)
+    // ══════════════════════════════════════════════════════════════════════════
+    const SEGS = 40;
+    const groundGeo = new THREE.PlaneGeometry(BOX_W - 0.2, BOX_D - 0.2, SEGS, SEGS);
+    groundGeo.rotateX(-Math.PI / 2);
+    const pos = groundGeo.attributes.position;
+
+    // River path: sinusoidal groove through terrain
+    function riverY(x, z) {
+      const centerX = Math.sin(z * 0.15) * 3.5;
+      const dist = Math.abs(x - centerX);
+      if (dist < 1.8) return -0.35 * (1 - dist / 1.8);
+      return 0;
+    }
+
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i), z = pos.getZ(i);
+      const ry = riverY(x, z);
+      const noise = (Math.random() - 0.5) * 0.3;
+      pos.setY(i, ry + noise);
+    }
+    pos.needsUpdate = true;
+    groundGeo.computeVertexNormals();
+
+    const groundMesh = new THREE.Mesh(groundGeo, mat(C.ground, 1));
+    groundMesh.receiveShadow = true;
+    groundMesh.castShadow = false;
+    scene.add(groundMesh);
+
+    // ── River surface ─────────────────────────────────────────────────────────
+    const riverPath = [];
+    const RIVER_SEGS = 32;
+    for (let i = 0; i <= RIVER_SEGS; i++) {
+      const t = i / RIVER_SEGS;
+      const z = (t - 0.5) * (BOX_D - 1);
+      const x = Math.sin(z * 0.15) * 3.5;
+      riverPath.push(new THREE.Vector3(x, -0.28, z));
+    }
+
+    // Build ribbon mesh for river
+    const riverVerts = [], riverIdx = [];
+    const RIVER_W = 2.6;
+    for (let i = 0; i <= RIVER_SEGS; i++) {
+      const p = riverPath[i];
+      const tangent = i < RIVER_SEGS
+        ? riverPath[i + 1].clone().sub(p).normalize()
+        : riverPath[i].clone().sub(riverPath[i - 1]).normalize();
+      const right = new THREE.Vector3(-tangent.z, 0, tangent.x).normalize();
+      riverVerts.push(p.x - right.x * RIVER_W / 2, p.y, p.z - right.z * RIVER_W / 2);
+      riverVerts.push(p.x + right.x * RIVER_W / 2, p.y, p.z + right.z * RIVER_W / 2);
+    }
+    for (let i = 0; i < RIVER_SEGS; i++) {
+      const a = i * 2, b = a + 1, c = a + 2, d = a + 3;
+      riverIdx.push(a, b, c, b, d, c);
+    }
+    const riverGeo = new THREE.BufferGeometry();
+    riverGeo.setAttribute('position', new THREE.Float32BufferAttribute(riverVerts, 3));
+    riverGeo.setIndex(riverIdx);
+    riverGeo.computeVertexNormals();
+
+    const riverMat = new THREE.MeshStandardMaterial({
+      color: C.river, roughness: 0.05, metalness: 0.3,
+      transparent: true, opacity: 0.82, flatShading: false
+    });
+    const riverMesh = new THREE.Mesh(riverGeo, riverMat);
+    scene.add(riverMesh);
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  TREES
+    // ══════════════════════════════════════════════════════════════════════════
+    const treePositions = [];
+    const rng = (a, b) => a + Math.random() * (b - a);
+
+    for (let i = 0; i < 55; i++) {
+      let x, z, tries = 0;
+      do {
+        x = rng(-9, 9); z = rng(-9, 9);
+        tries++;
+      } while (
+        tries < 30 && (
+          // avoid river corridor
+          Math.abs(x - Math.sin(z * 0.15) * 3.5) < 2.5 ||
+          // avoid other trees
+          treePositions.some(p => Math.hypot(p[0] - x, p[1] - z) < 1.8)
+        )
+      );
+      if (tries < 30) {
+        treePositions.push([x, z]);
+        const scale = rng(0.7, 1.4);
+        scene.add(makeTree(x, z, scale));
+      }
+    }
+
+    // Boulders
+    for (let i = 0; i < 12; i++) {
+      const x = rng(-9, 9), z = rng(-9, 9);
+      if (Math.abs(x - Math.sin(z * 0.15) * 3.5) > 2) {
+        scene.add(makeBoulder(x, z));
+      }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  ANIMALS
+    // ══════════════════════════════════════════════════════════════════════════
+    const animals = [];
+    const types = ['deer', 'deer', 'rabbit', 'rabbit', 'rabbit', 'fox'];
+
+    for (const type of types) {
+      const mesh = makeAnimal(type);
+      let ax, az;
+      do { ax = rng(-7, 7); az = rng(-7, 7); }
+      while (Math.abs(ax - Math.sin(az * 0.15) * 3.5) < 2.2);
+      mesh.position.set(ax, 0, az);
+      mesh.rotation.y = Math.random() * Math.PI * 2;
+      scene.add(mesh);
+      animals.push({
+        mesh,
+        speed: 0.008 + Math.random() * 0.012,
+        turnSpeed: (Math.random() - 0.5) * 0.02,
+        dir: Math.random() * Math.PI * 2,
+        pauseTimer: Math.random() * 200,
+        paused: false,
+        bobPhase: Math.random() * Math.PI * 2,
+      });
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  PARTICLES (fireflies)
+    // ══════════════════════════════════════════════════════════════════════════
+    const FIREFLY_COUNT = 60;
+    const ffPositions = new Float32Array(FIREFLY_COUNT * 3);
+    const ffPhases = new Float32Array(FIREFLY_COUNT);
+    for (let i = 0; i < FIREFLY_COUNT; i++) {
+      ffPositions[i * 3]     = rng(-9, 9);
+      ffPositions[i * 3 + 1] = rng(0.3, 3.5);
+      ffPositions[i * 3 + 2] = rng(-9, 9);
+      ffPhases[i] = Math.random() * Math.PI * 2;
+    }
+    const ffGeo = new THREE.BufferGeometry();
+    ffGeo.setAttribute('position', new THREE.BufferAttribute(ffPositions, 3));
+    const ffMat = new THREE.PointsMaterial({ color: 0xaaffaa, size: 0.08, transparent: true, opacity: 0.9 });
+    const fireflies = new THREE.Points(ffGeo, ffMat);
+    scene.add(fireflies);
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  GYROSCOPE / DEVICE ORIENTATION
+    // ══════════════════════════════════════════════════════════════════════════
+    let gyroActive = false;
+    let alpha = 0, beta = 0, gamma = 0;
+    const smoothAlpha = { v: 0 }, smoothBeta = { v: 0 }, smoothGamma = { v: 0 };
+
+    function lerp(a, b, t) { return a + (b - a) * t; }
+    function lerpAngle(a, b, t) {
+      // shortest path angle lerp
+      let d = b - a;
+      while (d > 180) d -= 360;
+      while (d < -180) d += 360;
+      return a + d * t;
+    }
+
+    function handleOrientation(e) {
+      if (!gyroActive) return;
+      alpha  = e.alpha  || 0;
+      beta   = e.beta   || 0;
+      gamma  = e.gamma  || 0;
+    }
+
+    function activateGyro() {
+      gyroActive = true;
+      document.getElementById('gyro-btn').style.display = 'none';
+      document.getElementById('ui').textContent = 'Tilt your device to look around';
+      window.addEventListener('deviceorientation', handleOrientation);
+    }
+
+    const gyroBtn = document.getElementById('gyro-btn');
+
+    if ('DeviceOrientationEvent' in window) {
+      if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+        // iOS 13+ requires explicit permission
+        gyroBtn.style.display = 'block';
+        gyroBtn.addEventListener('click', async () => {
+          try {
+            const perm = await DeviceOrientationEvent.requestPermission();
+            if (perm === 'granted') activateGyro();
+          } catch (e) { console.warn('Gyro permission denied', e); }
+        });
+      } else {
+        // Android / other browsers — auto-activate
+        activateGyro();
+      }
+    } else {
+      document.getElementById('ui').textContent = 'Open on mobile for motion controls';
+    }
+
+    // ── Camera rig ────────────────────────────────────────────────────────────
+    // Camera pivot sits at eye level outside the box front face
+    const camPivot = new THREE.Object3D();
+    camPivot.position.set(0, 6, 14);
+    scene.add(camPivot);
+    camPivot.add(camera);
+    camera.position.set(0, 0, 8); // distance from pivot
+    camera.lookAt(camPivot.position);
+
+    // We'll drive camPivot rotation from gyro
+    const deviceQuat = new THREE.Quaternion();
+    const screenQuat = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5)); // screen landscape fix
+    const worldQuat  = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.PI); // flip Z
+    const euler = new THREE.Euler();
+
+    // ── Mouse drag fallback (desktop) ─────────────────────────────────────────
+    let drag = false, prevX = 0, prevY = 0;
+    let yaw = 0, pitch = 0;
+    renderer.domElement.addEventListener('mousedown', e => { drag = true; prevX = e.clientX; prevY = e.clientY; });
+    renderer.domElement.addEventListener('mousemove', e => {
+      if (!drag) return;
+      yaw   -= (e.clientX - prevX) * 0.003;
+      pitch -= (e.clientY - prevY) * 0.003;
+      pitch = Math.max(-0.6, Math.min(0.4, pitch));
+      prevX = e.clientX; prevY = e.clientY;
+    });
+    renderer.domElement.addEventListener('mouseup', () => { drag = false; });
+    renderer.domElement.addEventListener('mouseleave', () => { drag = false; });
+
+    // Touch drag
+    let touchPrevX = 0, touchPrevY = 0;
+    renderer.domElement.addEventListener('touchstart', e => {
+      touchPrevX = e.touches[0].clientX;
+      touchPrevY = e.touches[0].clientY;
+    }, { passive: true });
+    renderer.domElement.addEventListener('touchmove', e => {
+      if (gyroActive) return; // gyro takes precedence
+      yaw   -= (e.touches[0].clientX - touchPrevX) * 0.004;
+      pitch -= (e.touches[0].clientY - touchPrevY) * 0.004;
+      pitch = Math.max(-0.6, Math.min(0.4, pitch));
+      touchPrevX = e.touches[0].clientX;
+      touchPrevY = e.touches[0].clientY;
+    }, { passive: true });
+
+    // ── Resize ─────────────────────────────────────────────────────────────────
+    window.addEventListener('resize', () => {
+      camera.aspect = innerWidth / innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(innerWidth, innerHeight);
+    });
+
+    // ══════════════════════════════════════════════════════════════════════════
+    //  ANIMATION LOOP
+    // ══════════════════════════════════════════════════════════════════════════
+    const clock = new THREE.Clock();
+
+    function updateCamera(t) {
+      if (gyroActive) {
+        // Smooth raw values
+        smoothAlpha.v = lerpAngle(smoothAlpha.v, alpha,  0.08);
+        smoothBeta.v  = lerpAngle(smoothBeta.v,  beta,   0.08);
+        smoothGamma.v = lerpAngle(smoothGamma.v, gamma,  0.08);
+
+        const a = THREE.MathUtils.degToRad(smoothAlpha.v);
+        const b = THREE.MathUtils.degToRad(smoothBeta.v);
+        const g = THREE.MathUtils.degToRad(smoothGamma.v);
+
+        euler.set(b, a, -g, 'YXZ');
+        deviceQuat.setFromEuler(euler);
+        // Compose with screen correction
+        const finalQuat = screenQuat.clone().multiply(deviceQuat).multiply(worldQuat);
+
+        // Extract yaw/pitch from quaternion for smooth camera
+        const pitchAngle = Math.asin(2 * (finalQuat.w * finalQuat.x - finalQuat.z * finalQuat.y));
+        const yawAngle   = Math.atan2(2 * (finalQuat.w * finalQuat.y + finalQuat.z * finalQuat.x),
+                                      1 - 2 * (finalQuat.x * finalQuat.x + finalQuat.y * finalQuat.y));
+
+        // Map beta (tilt) to pitch, alpha (rotation) to yaw with limited range
+        const mappedPitch = THREE.MathUtils.clamp(
+          THREE.MathUtils.mapLinear(smoothBeta.v,  -20, 70, 0.5, -0.5), -0.6, 0.5);
+        const mappedYaw   = THREE.MathUtils.mapLinear(smoothGamma.v, -45, 45, -0.8, 0.8);
+
+        camPivot.rotation.x = lerp(camPivot.rotation.x, mappedPitch, 0.1);
+        camPivot.rotation.y = lerp(camPivot.rotation.y, mappedYaw,   0.1);
+      } else {
+        camPivot.rotation.y = lerp(camPivot.rotation.y, yaw,   0.08);
+        camPivot.rotation.x = lerp(camPivot.rotation.x, pitch, 0.08);
+      }
+    }
+
+    function updateAnimals(t) {
+      const BOUNDS = 9.5;
+      for (const a of animals) {
+        if (a.paused) {
+          a.pauseTimer--;
+          if (a.pauseTimer <= 0) {
+            a.paused = false;
+            a.pauseTimer = 100 + Math.random() * 300;
+            a.dir = Math.random() * Math.PI * 2;
+          }
+          continue;
+        }
+
+        a.pauseTimer--;
+        if (a.pauseTimer <= 0) {
+          a.paused = true;
+          a.pauseTimer = 40 + Math.random() * 80;
+          continue;
+        }
+
+        // wander
+        a.dir += a.turnSpeed + (Math.random() - 0.5) * 0.04;
+        const nx = a.mesh.position.x + Math.cos(a.dir) * a.speed;
+        const nz = a.mesh.position.z + Math.sin(a.dir) * a.speed;
+
+        // bounce off box walls and river
+        const riverCenterX = Math.sin(nz * 0.15) * 3.5;
+        const riverDist = Math.abs(nx - riverCenterX);
+
+        if (Math.abs(nx) > BOUNDS || Math.abs(nz) > BOUNDS || riverDist < 1.5) {
+          a.dir += Math.PI * (0.7 + Math.random() * 0.6);
+        } else {
+          a.mesh.position.x = nx;
+          a.mesh.position.z = nz;
+        }
+
+        a.mesh.rotation.y = -a.dir + Math.PI / 2;
+
+        // Bob up/down while walking
+        a.bobPhase += 0.12;
+        a.mesh.position.y = Math.abs(Math.sin(a.bobPhase)) * 0.04;
+      }
+    }
+
+    function updateFireflies(t) {
+      const pArr = fireflies.geometry.attributes.position.array;
+      for (let i = 0; i < FIREFLY_COUNT; i++) {
+        const ph = ffPhases[i] + t * 0.8;
+        pArr[i * 3 + 1] = 0.5 + Math.sin(ph) * 1.2 + Math.cos(ph * 1.3) * 0.5;
+        pArr[i * 3]     += Math.sin(ph * 0.7 + i) * 0.003;
+        pArr[i * 3 + 2] += Math.cos(ph * 0.5 + i) * 0.003;
+        // wrap
+        if (pArr[i * 3]     > 9)  pArr[i * 3]     = -9;
+        if (pArr[i * 3]     < -9) pArr[i * 3]     =  9;
+        if (pArr[i * 3 + 2] > 9)  pArr[i * 3 + 2] = -9;
+        if (pArr[i * 3 + 2] < -9) pArr[i * 3 + 2] =  9;
+      }
+      fireflies.geometry.attributes.position.needsUpdate = true;
+      ffMat.opacity = 0.5 + Math.sin(t * 1.5) * 0.4;
+    }
+
+    function animate() {
+      requestAnimationFrame(animate);
+      const t = clock.getElapsedTime();
+
+      updateCamera(t);
+      updateAnimals(t);
+      updateFireflies(t);
+
+      // Gentle river shimmer
+      riverMat.color.setHSL(0.57 + Math.sin(t * 0.4) * 0.02, 0.7, 0.45 + Math.sin(t * 0.8) * 0.04);
+
+      // Subtle sun color shift (dawn/dusk cycle, very slow)
+      const dayT = (Math.sin(t * 0.03) + 1) * 0.5;
+      sun.color.lerpColors(new THREE.Color(0xffe8b0), new THREE.Color(0xff9955), dayT * 0.3);
+      sun.intensity = 1.1 + dayT * 0.4;
+
+      renderer.render(scene, camera);
+    }
+
+    animate();
+  </script>
+</body>
+</html>
