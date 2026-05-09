@@ -22,6 +22,48 @@
   #controls-hint { position: fixed; bottom: 15px; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.6); color: #ccc; padding: 8px 20px; border-radius: 20px; font-size: 13px; }
   #minimap { position: fixed; bottom: 15px; right: 15px; background: rgba(0,0,0,0.7); border: 2px solid #555; border-radius: 8px; }
   #minimap canvas { border-radius: 6px; }
+
+  /* ── Mobile controls ── */
+  #mobile-controls { display: none; position: fixed; bottom: 0; left: 0; width: 100%; pointer-events: none; }
+  #joystick-zone {
+    position: absolute; bottom: 24px; left: 24px;
+    width: 130px; height: 130px;
+    pointer-events: all; touch-action: none;
+  }
+  #joystick-base {
+    width: 130px; height: 130px; border-radius: 50%;
+    background: rgba(255,255,255,0.12);
+    border: 3px solid rgba(255,255,255,0.35);
+    position: relative;
+  }
+  #joystick-knob {
+    width: 56px; height: 56px; border-radius: 50%;
+    background: rgba(255,255,255,0.55);
+    border: 3px solid rgba(255,255,255,0.9);
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    transition: background 0.1s;
+    pointer-events: none;
+  }
+  #action-buttons {
+    position: absolute; bottom: 24px; right: 24px;
+    display: flex; flex-direction: column; gap: 14px;
+    align-items: center;
+    pointer-events: all; touch-action: none;
+  }
+  .action-btn {
+    width: 80px; height: 80px; border-radius: 50%;
+    border: 3px solid rgba(255,255,255,0.5);
+    font-size: 13px; font-weight: bold; color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    user-select: none; -webkit-user-select: none;
+    touch-action: none; cursor: pointer;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.6);
+  }
+  #btn-gas  { background: rgba(30,180,30,0.7);  border-color: rgba(100,255,100,0.7); width: 90px; height: 90px; font-size: 15px; }
+  #btn-brake { background: rgba(200,30,30,0.65); border-color: rgba(255,100,100,0.7); }
+  .action-btn:active, .action-btn.pressed { filter: brightness(1.3); }
   #countdown { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 120px; font-weight: bold; color: #fff; text-shadow: 0 0 30px #f00, 0 0 60px #f00; display: none; pointer-events: none; }
   #finish-screen { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.8); display: none; align-items: center; justify-content: center; flex-direction: column; pointer-events: all; }
   #finish-screen h1 { font-size: 72px; color: #f90; text-shadow: 0 0 20px #f90; margin-bottom: 20px; }
@@ -50,6 +92,18 @@
 <div id="countdown">3</div>
 <div id="minimap"><canvas id="minimap-canvas" width="160" height="160"></canvas></div>
 <div id="controls-hint">WASD / Arrow Keys to drive &nbsp;|&nbsp; Space = brake</div>
+
+<div id="mobile-controls">
+  <div id="joystick-zone">
+    <div id="joystick-base">
+      <div id="joystick-knob"></div>
+    </div>
+  </div>
+  <div id="action-buttons">
+    <div class="action-btn" id="btn-gas">GAS</div>
+    <div class="action-btn" id="btn-brake">BRAKE</div>
+  </div>
+</div>
 <div id="finish-screen">
   <h1 id="finish-title">RACE FINISHED!</h1>
   <p id="finish-pos">You finished in 1st place!</p>
@@ -548,6 +602,89 @@ function ordinal(n) {
 const keys = {};
 window.addEventListener('keydown', e => { keys[e.key] = true; });
 window.addEventListener('keyup', e => { keys[e.key] = false; });
+
+// ─── MOBILE CONTROLS ─────────────────────────────────────────────────────────
+(function setupMobileControls() {
+  const isTouchDevice = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+  const mobileEl = document.getElementById('mobile-controls');
+  const hintEl = document.getElementById('controls-hint');
+
+  if (isTouchDevice) {
+    mobileEl.style.display = 'block';
+    hintEl.style.display = 'none';
+    // Minimap moves up so it doesn't overlap buttons
+    document.getElementById('minimap').style.bottom = '180px';
+  }
+
+  // Joystick
+  const zone = document.getElementById('joystick-zone');
+  const base = document.getElementById('joystick-base');
+  const knob = document.getElementById('joystick-knob');
+  const RADIUS = 37; // max knob travel (px)
+  let joyTouchId = null;
+  let joyOrigin = { x: 0, y: 0 };
+
+  function joyStart(e) {
+    e.preventDefault();
+    const touch = e.changedTouches[0];
+    joyTouchId = touch.identifier;
+    const rect = base.getBoundingClientRect();
+    joyOrigin = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    joyMove(e);
+  }
+
+  function joyMove(e) {
+    e.preventDefault();
+    let touch = null;
+    for (let t of e.touches) { if (t.identifier === joyTouchId) { touch = t; break; } }
+    if (!touch) return;
+
+    const dx = touch.clientX - joyOrigin.x;
+    const dy = touch.clientY - joyOrigin.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    const clampedDist = Math.min(dist, RADIUS);
+    const angle = Math.atan2(dy, dx);
+    const kx = Math.cos(angle) * clampedDist;
+    const ky = Math.sin(angle) * clampedDist;
+
+    knob.style.transform = `translate(calc(-50% + ${kx}px), calc(-50% + ${ky}px))`;
+
+    const threshold = RADIUS * 0.25;
+    keys['ArrowLeft']  = dx < -threshold;
+    keys['ArrowRight'] = dx >  threshold;
+    keys['ArrowUp']    = dy < -threshold;
+    keys['ArrowDown']  = dy >  threshold;
+  }
+
+  function joyEnd(e) {
+    e.preventDefault();
+    let found = false;
+    for (let t of e.touches) { if (t.identifier === joyTouchId) { found = true; break; } }
+    if (!found) {
+      joyTouchId = null;
+      knob.style.transform = 'translate(-50%, -50%)';
+      keys['ArrowLeft'] = keys['ArrowRight'] = keys['ArrowUp'] = keys['ArrowDown'] = false;
+    }
+  }
+
+  zone.addEventListener('touchstart', joyStart, { passive: false });
+  zone.addEventListener('touchmove',  joyMove,  { passive: false });
+  zone.addEventListener('touchend',   joyEnd,   { passive: false });
+  zone.addEventListener('touchcancel',joyEnd,   { passive: false });
+
+  // Gas / Brake buttons
+  function bindBtn(id, key) {
+    const el = document.getElementById(id);
+    function press(e) { e.preventDefault(); keys[key] = true;  el.classList.add('pressed'); }
+    function release(e) { e.preventDefault(); keys[key] = false; el.classList.remove('pressed'); }
+    el.addEventListener('touchstart',  press,   { passive: false });
+    el.addEventListener('touchend',    release, { passive: false });
+    el.addEventListener('touchcancel', release, { passive: false });
+  }
+
+  bindBtn('btn-gas',   'ArrowUp');
+  bindBtn('btn-brake', ' ');
+})();
 
 // ─── RACE STATE ───────────────────────────────────────────────────────────────
 let raceStarted = false;
